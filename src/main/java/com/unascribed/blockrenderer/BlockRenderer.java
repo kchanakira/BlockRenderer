@@ -3,17 +3,22 @@ package com.unascribed.blockrenderer;
 import java.awt.Graphics2D;
 import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import javax.imageio.ImageIO;
 
+import com.google.common.hash.Hashing;
 import net.minecraft.client.util.ITooltipFlag;
+import net.minecraft.nbt.CompressedStreamTools;
+import net.minecraft.nbt.NBTTagCompound;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.lwjgl.BufferUtils;
@@ -22,10 +27,15 @@ import org.lwjgl.input.Mouse;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
 
+import com.google.common.base.Charsets;
 import com.google.common.base.Joiner;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.google.common.io.Files;
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.gui.GuiIngameMenu;
@@ -55,31 +65,34 @@ import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent.Phase;
 import net.minecraftforge.fml.common.gameevent.TickEvent.RenderTickEvent;
 
-@Mod(modid=BlockRenderer.MODID,name=BlockRenderer.NAME,version=BlockRenderer.VERSION,acceptableRemoteVersions="*",acceptableSaveVersions="*",clientSideOnly=true)
+@Mod(modid = BlockRenderer.MODID, name = BlockRenderer.NAME, version = BlockRenderer.VERSION, acceptableRemoteVersions = "*", acceptableSaveVersions = "*", clientSideOnly = true)
 public class BlockRenderer {
 	public static final String MODID = "blockrenderer";
 	public static final String NAME = "BlockRenderer";
 	public static final String VERSION = "1.0.0";
-	
+
 	@Instance
 	public static BlockRenderer inst;
-	
+	private final Logger log = LogManager.getLogger("BlockRenderer");
+
 	protected KeyBinding bind;
 	protected boolean down = false;
 	protected static final DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd_HH.mm.ss");
 	protected String pendingBulkRender;
+	protected boolean pendingBulkSheetRender = false;
 	protected int pendingBulkRenderSize;
-	
-	protected final Logger log = LogManager.getLogger("BlockRenderer");
-	
+
+	private int size;
+	private float oldZLevel;
+
 	@EventHandler
 	public void onPreInit(FMLPreInitializationEvent e) {
 		bind = new KeyBinding("key.render", Keyboard.KEY_GRAVE, "key.categories.blockrenderer");
 		ClientRegistry.registerKeyBinding(bind);
 		MinecraftForge.EVENT_BUS.register(this);
 	}
-	
-	@SubscribeEvent(priority=EventPriority.HIGHEST)
+
+	@SubscribeEvent(priority = EventPriority.HIGHEST)
 	public void onFrameStart(RenderTickEvent e) {
 		/**
 		 * Quick primer: OpenGL is double-buffered. This means, where we draw to is
@@ -87,9 +100,16 @@ public class BlockRenderer {
 		 * Minecraft renders, as long as we put everything back the way it was.
 		 */
 		if (e.phase == Phase.START) {
+			// We *must* call render code in pre-render. If we don't, it won't work right.
 			if (pendingBulkRender != null) {
-				// We *must* call render code in pre-render. If we don't, it won't work right.
-				bulkRender(pendingBulkRender, pendingBulkRenderSize);
+				if (pendingBulkSheetRender) {
+					sheetRender(pendingBulkRender, pendingBulkRenderSize);
+				}
+				else {
+					bulkRender(pendingBulkRender, pendingBulkRenderSize);
+				}
+
+				pendingBulkSheetRender = false;
 				pendingBulkRender = null;
 			}
 			// XXX is this really neccessary? I forget why I made it unwrap the binding...
@@ -110,7 +130,7 @@ public class BlockRenderer {
 						// OpenGL's Y-zero is at the *bottom* of the window.
 						// Minecraft's Y-zero is at the top. So, we need to flip it.
 						final int y = h - Mouse.getY() * h / mc.displayHeight - 1;
-						hovered = ((GuiContainer)currentScreen).getSlotAtPosition(x, y);
+						hovered = ((GuiContainer) currentScreen).getSlotAtPosition(x, y);
 					}
 					if (GuiScreen.isCtrlKeyDown()) {
 						String modid = null;
@@ -124,13 +144,15 @@ public class BlockRenderer {
 							if (is != null) {
 								int size = 512;
 								if (GuiScreen.isShiftKeyDown()) {
-									size = 16*new ScaledResolution(mc).getScaleFactor();
+									size = 16 * new ScaledResolution(mc).getScaleFactor();
 								}
 								setUpRenderState(size);
-								mc.ingameGUI.getChatGUI().printChatMessage(new TextComponentString(render(is, new File("renders"), true)));
+								mc.ingameGUI.getChatGUI().printChatMessage(
+										new TextComponentString(render(is, new File("renders"), true, false)));
 								tearDownRenderState();
 							} else {
-								mc.ingameGUI.getChatGUI().printChatMessage(new TextComponentTranslation("msg.slot.empty"));
+								mc.ingameGUI.getChatGUI()
+										.printChatMessage(new TextComponentTranslation("msg.slot.empty"));
 							}
 						} else {
 							mc.ingameGUI.getChatGUI().printChatMessage(new TextComponentTranslation("msg.slot.absent"));
@@ -161,25 +183,25 @@ public class BlockRenderer {
 				try {
 					i.getSubItems(i.getCreativeTab(), li);
 				} catch (Throwable t) {
-					log.warn("Failed to get renderable items for "+resloc, t);
+					log.warn("Failed to get renderable items for " + resloc, t);
 				}
 				toRender.addAll(li);
 			}
 		}
-		File folder = new File("renders/"+dateFormat.format(new Date())+"_"+sanitize(modidSpec)+"/");
+		File folder = new File("renders/" + dateFormat.format(new Date()) + "_" + sanitize(modidSpec) + "/");
 		long lastUpdate = 0;
 		String joined = Joiner.on(", ").join(modids);
 		setUpRenderState(size);
 		for (ItemStack is : toRender) {
 			if (Keyboard.isKeyDown(Keyboard.KEY_ESCAPE))
 				break;
-			render(is, folder, false);
+			render(is, folder, false, true);
 			rendered++;
-			if (Minecraft.getSystemTime()-lastUpdate > 33) {
+			if (Minecraft.getSystemTime() - lastUpdate > 33) {
 				tearDownRenderState();
 				renderLoading(I18n.format("gui.rendering", toRender.size(), joined),
-						I18n.format("gui.progress", rendered, toRender.size(), (toRender.size()-rendered)),
-						is, (float)rendered/toRender.size());
+						I18n.format("gui.progress", rendered, toRender.size(), (toRender.size() - rendered)), is,
+						(float) rendered / toRender.size());
 				lastUpdate = Minecraft.getSystemTime();
 				setUpRenderState(size);
 			}
@@ -188,13 +210,135 @@ public class BlockRenderer {
 			renderLoading(I18n.format("gui.rendered", toRender.size(), Joiner.on(", ").join(modids)), "", null, 1);
 		} else {
 			renderLoading(I18n.format("gui.renderCancelled"),
-					I18n.format("gui.progress", rendered, toRender.size(), (toRender.size()-rendered)),
-					null, (float)rendered/toRender.size());
+					I18n.format("gui.progress", rendered, toRender.size(), (toRender.size() - rendered)), null,
+					(float) rendered / toRender.size());
 		}
 		tearDownRenderState();
 		try {
 			Thread.sleep(1500);
-		} catch (InterruptedException e) {}
+		} catch (InterruptedException ignored) {}
+	}
+
+	@SuppressWarnings({"UnstableApiUsage", "ResultOfMethodCallIgnored"})
+	private void sheetRender(String modidSpec, int size) {
+		if (modidSpec == null || modidSpec.isEmpty())
+			return;
+
+		Minecraft.getMinecraft().displayGuiScreen(new GuiIngameMenu());
+
+		File folder = new File("renders/" + dateFormat.format(new Date()) + "_spritesheets/");
+		Set<String> modids = Stream.of(modidSpec.split(",")).map(String::trim).collect((Collectors.toSet()));
+		SortedMap<String, List<ItemStack>> sheetsToRender = new TreeMap<>();
+
+		for (ResourceLocation resloc : Item.REGISTRY.getKeys()) {
+			if (modidSpec.equals("*") || resloc != null && modids.contains(resloc.getResourceDomain())) {
+				NonNullList<ItemStack> modItems = NonNullList.create();
+
+				Item item = Item.REGISTRY.getObject(resloc);
+
+				try {
+					if (item != null && item.getCreativeTab() != null)
+						item.getSubItems(item.getCreativeTab(), modItems);
+				}
+				catch (Throwable t) {
+					log.warn("Failed to get renderable items for " + resloc, t);
+				}
+
+				if (modItems.isEmpty())
+					continue;
+
+				if (!sheetsToRender.containsKey(resloc.getResourceDomain())) {
+					sheetsToRender.putIfAbsent(resloc.getResourceDomain(), new ArrayList<>());
+				}
+
+				sheetsToRender.get(resloc.getResourceDomain()).addAll(modItems);
+			}
+		}
+
+		setUpRenderState(size);
+
+		for (Map.Entry<String, List<ItemStack>> entry : sheetsToRender.entrySet()) {
+			String mod = entry.getKey();
+			List<ItemStack> stacks = entry.getValue();
+
+			long lastUpdate = 0;
+			int dimensions = (int) Math.round(Math.sqrt(stacks.size())),
+				rendered = 0,
+				x = 0,
+				y = 0;
+
+			JsonArray sheetMetadata = new JsonArray();
+			BufferedImage sheetImage = new BufferedImage(size * dimensions, size * dimensions, BufferedImage.TYPE_INT_ARGB);
+			Graphics2D sheetGraphics = sheetImage.createGraphics();
+
+			try {
+				for (ItemStack stack : stacks) {
+					if (Keyboard.isKeyDown(Keyboard.KEY_ESCAPE))
+						break;
+
+					ByteArrayOutputStream stream = new ByteArrayOutputStream();
+					CompressedStreamTools.writeCompressed(stack.writeToNBT(new NBTTagCompound()), stream);
+
+					JsonObject itemMetadata = new JsonObject();
+					itemMetadata.addProperty("mod", stack.getItem().getRegistryName().getResourceDomain());
+					itemMetadata.addProperty("name", stack.getItem().getRegistryName().getResourcePath());
+					itemMetadata.addProperty("metadata", stack.getMetadata());
+					itemMetadata.addProperty("label", stack.getDisplayName());
+					itemMetadata.addProperty("spriteX", x * size);
+					itemMetadata.addProperty("spriteY", y * size);
+					itemMetadata.addProperty("hash", Hashing.sha256()
+							.hashBytes(stream.toByteArray())
+							.toString());
+					sheetMetadata.add(itemMetadata);
+
+					sheetGraphics.drawImage(render(stack), null, x * size, y * size);
+
+					rendered++;
+					x++;
+
+					if (x >= dimensions) {
+						x = 0;
+						y++;
+					}
+
+					if (Minecraft.getSystemTime() - lastUpdate > 33) {
+						tearDownRenderState();
+						renderLoading(I18n.format("gui.rendering", stacks.size(), mod),
+								I18n.format("gui.progress", rendered, stacks.size(), (stacks.size() - rendered)), stack, (float) rendered / stacks.size());
+						lastUpdate = Minecraft.getSystemTime();
+						setUpRenderState(size);
+					}
+				}
+				if (rendered >= stacks.size()) {
+					renderLoading(I18n.format("gui.rendered", stacks.size(), Joiner.on(", ").join(modids)), "", null, 1);
+				}
+				else {
+					renderLoading(I18n.format("gui.renderCancelled"),
+							I18n.format("gui.progress", rendered, stacks.size(), (stacks.size() - rendered)), null, (float) rendered / stacks.size());
+				}
+
+				File metadataFile = new File(folder, sanitize(mod) + ".json");
+				File imageFile = new File(folder, sanitize(mod) + ".png");
+
+				Files.createParentDirs(metadataFile);
+				Files.createParentDirs(imageFile);
+				metadataFile.createNewFile();
+				imageFile.createNewFile();
+
+				Files.write(new Gson().toJson(sheetMetadata), metadataFile, Charsets.UTF_8);
+				ImageIO.write(sheetImage, "PNG", imageFile);
+			}
+			catch (Exception e) {
+				e.printStackTrace();
+			}
+		}
+
+		tearDownRenderState();
+
+		try {
+			Thread.sleep(1500);
+		}
+		catch (InterruptedException ignored) {}
 	}
 
 	private void renderLoading(String title, String subtitle, ItemStack is, float progress) {
@@ -255,23 +399,35 @@ public class BlockRenderer {
 		mc.getFramebuffer().bindFramebuffer(false);
 	}
 
-	private String render(ItemStack is, File folder, boolean includeDateInFilename) {
+	private BufferedImage render(ItemStack is) throws InterruptedException {
 		Minecraft mc = Minecraft.getMinecraft();
-		String filename = (includeDateInFilename ? dateFormat.format(new Date())+"_" : "")+sanitize(is.getDisplayName());
+
 		GlStateManager.pushMatrix();
 			GlStateManager.clearColor(0, 0, 0, 0);
 			GlStateManager.clear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT);
 			mc.getRenderItem().renderItemAndEffectIntoGUI(is, 0, 0);
 		GlStateManager.popMatrix();
+		
+		/*
+		 * We need to flip the image over here, because again, GL Y-zero is
+		 * the bottom, so it's "Y-up". Minecraft's Y-zero is the top, so it's
+		 * "Y-down". Since readPixels is Y-up, our Y-down render is flipped.
+		 * It's easier to do this operation on the resulting image than to
+		 * do it with GL transforms. Not faster, just easier.
+		 */
+		return createFlipped(readPixels(size, size));
+	}
+
+	private String render(ItemStack is, File folder, boolean includeDateInFilename, boolean useNamespacedFilename) {
+		String filename = (includeDateInFilename ? dateFormat.format(new Date()) + "_" : "") + sanitize(is.getDisplayName());
+
+		if (useNamespacedFilename) {
+			String modId = Item.REGISTRY.getNameForObject(is.getItem()).getResourceDomain();
+			filename = String.format("%s___%s___%d", sanitize(modId), is.getItem().getRegistryName().getResourcePath(), is.getMetadata());
+		}
+
 		try {
-			/*
-			 * We need to flip the image over here, because again, GL Y-zero is
-			 * the bottom, so it's "Y-up". Minecraft's Y-zero is the top, so it's
-			 * "Y-down". Since readPixels is Y-up, our Y-down render is flipped.
-			 * It's easier to do this operation on the resulting image than to
-			 * do it with GL transforms. Not faster, just easier.
-			 */
-			BufferedImage img = createFlipped(readPixels(size, size));
+			BufferedImage img = render(is);
 			
 			File f = new File(folder, filename+".png");
 			int i = 2;
@@ -288,9 +444,6 @@ public class BlockRenderer {
 			return I18n.format("msg.render.fail");
 		}
 	}
-	
-	private int size;
-	private float oldZLevel;
 	
 	private void setUpRenderState(int desiredSize) {
 		Minecraft mc = Minecraft.getMinecraft();
@@ -337,12 +490,8 @@ public class BlockRenderer {
 		
 		Minecraft.getMinecraft().getRenderItem().zLevel = oldZLevel;
 	}
-	
-	private String sanitize(String str) {
-		return str.replaceAll("[^A-Za-z0-9-_ ]", "_");
-	}
 
-	public BufferedImage readPixels(int width, int height) throws InterruptedException {
+	private BufferedImage readPixels(int width, int height) {
 		/*
 		 * Make sure we're reading from the back buffer, not the front buffer.
 		 * The front buffer is what is currently on-screen, and is useful for
@@ -391,4 +540,7 @@ public class BlockRenderer {
 		return newImage;
 	}
 
+	private static String sanitize(String str) {
+		return str.replaceAll("[^A-Za-z0-9-_ ]", "_");
+	}
 }

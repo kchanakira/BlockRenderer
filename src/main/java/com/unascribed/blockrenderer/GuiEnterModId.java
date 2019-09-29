@@ -25,16 +25,21 @@ public class GuiEnterModId extends GuiScreen implements GuiResponder {
 	@Override
 	public void initGui() {
 		Keyboard.enableRepeatEvents(true);
+
+		boolean enabled = mc.world != null;
 		String oldText = (text == null ? prefill : text.getText());
-		
 		float oldSize = (size == null ? 512 : size.getSliderValue());
 		
 		text = new GuiTextField(0, mc.fontRenderer, width/2-100, height/6+50, 200, 20);
 		text.setText(oldText);
-		
-		buttonList.add(new GuiButton(2, width/2-100, height/6+120, 98, 20, I18n.format("gui.cancel")));
+
 		GuiButton render = new GuiButton(1, width/2+2, height/6+120, 98, 20, I18n.format("gui.render"));
+		GuiButton renderSheet = new GuiButton(4, width/2-100, height/6+144, 200, 20, I18n.format("gui.rendersheet"));
+
+		buttonList.add(new GuiButton(2, width/2-100, height/6+120, 98, 20, I18n.format("gui.cancel")));
 		buttonList.add(render);
+		buttonList.add(renderSheet);
+
 		int minSize = Math.min(mc.displayWidth, mc.displayHeight);
 		size = new GuiSlider(this, 3, width/2-100, height/6+80, I18n.format("gui.rendersize"), 16, Math.min(2048, minSize), Math.min(oldSize, minSize), (id, name, value) -> {
 			String px = Integer.toString(round(value));
@@ -45,40 +50,48 @@ public class GuiEnterModId extends GuiScreen implements GuiResponder {
 		
 		text.setFocused(true);
 		text.setCanLoseFocus(false);
-		boolean enabled = mc.world != null;
+
 		render.enabled = enabled;
+		renderSheet.enabled = enabled;
 		text.setEnabled(enabled);
 		size.enabled = enabled;
 	}
 
 	private int round(float value) {
 		int val = (int)value;
+
 		// There's a more efficient method in MathHelper, but it rounds up. We want the nearest.
 		int nearestPowerOfTwo = (int)Math.pow(2, Math.ceil(Math.log(val)/Math.log(2)));
 		int minSize = Math.min(mc.displayHeight, mc.displayWidth);
+
 		if (nearestPowerOfTwo < minSize && Math.abs(val-nearestPowerOfTwo) < 32) {
 			val = nearestPowerOfTwo;
 		}
+
 		return Math.min(val, minSize);
 	}
 	
 	@Override
 	public void drawScreen(int mouseX, int mouseY, float partialTicks) {
 		drawDefaultBackground();
+
 		super.drawScreen(mouseX, mouseY, partialTicks);
+
 		drawCenteredString(mc.fontRenderer, I18n.format("gui.entermodid"), width/2, height/6, -1);
+
 		if (mc.world == null) {
 			drawCenteredString(mc.fontRenderer, I18n.format("gui.noworld"), width/2, height/6+30, 0xFF5555);
 		} else {
 			boolean widthCap = (mc.displayWidth < 2048);
 			boolean heightCap = (mc.displayHeight < 2048);
 			String str = null;
+
 			if (widthCap && heightCap) {
 				if (mc.displayWidth > mc.displayHeight) {
 					str = "gui.cappedheight";
 				} else if (mc.displayWidth == mc.displayHeight) {
 					str = "gui.cappedboth";
-				} else if (mc.displayHeight > mc.displayWidth) {
+				} else {
 					str = "gui.cappedwidth";
 				}
 			} else if (widthCap) {
@@ -90,12 +103,14 @@ public class GuiEnterModId extends GuiScreen implements GuiResponder {
 				drawCenteredString(mc.fontRenderer, I18n.format(str, Math.min(mc.displayHeight, mc.displayWidth)), width/2, height/6+104, 0xFFFFFF);
 			}
 		}
+
 		text.drawTextBox();
 	}
 
 	@Override
 	protected void actionPerformed(GuiButton button) throws IOException {
 		super.actionPerformed(button);
+
 		if (button.id == 1) {
 			if (mc.world != null) {
 				BlockRenderer.inst.pendingBulkRender = text.getText();
@@ -104,6 +119,13 @@ public class GuiEnterModId extends GuiScreen implements GuiResponder {
 			mc.displayGuiScreen(old);
 		} else if (button.id == 2) {
 			mc.displayGuiScreen(old);
+		}
+		else if (button.id == 4) {
+			if (mc.world != null) {
+				BlockRenderer.inst.pendingBulkSheetRender = true;
+				BlockRenderer.inst.pendingBulkRender = text.getText();
+				BlockRenderer.inst.pendingBulkRenderSize = round(size.getSliderValue());
+			}
 		}
 	}
 

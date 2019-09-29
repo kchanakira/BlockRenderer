@@ -1,5 +1,6 @@
 private.properties
 bin/
+out/
 *.launch
 build/
 .classpath
@@ -7,6 +8,7 @@ build/
 .settings
 .metadata
 .gradle
+.idea/
 eclipse/
 minecraft/
 .pmd
