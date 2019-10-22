@@ -3,6 +3,7 @@ key.categories.blockrenderer=BlockRenderer
 
 msg.render.fail=Rendering failed, see game output for details
 msg.render.success=Successfully rendered to %s
+msg.render.saving=Saving files for %s
 
 msg.slot.empty=That slot has no item
 msg.slot.absent=There's no slot there
@@ -17,7 +18,7 @@ gui.cappedwidth=(Capped at %1$dx%1$d due to your window width)
 
 gui.cancel=Cancel
 gui.render=Render
-gui.rendersheet=Render All Spritesheets
+gui.rendersheet=Render Spritesheets
 gui.rendersize=Size
 
 gui.rendering=Rendering %1$s items from %2$s

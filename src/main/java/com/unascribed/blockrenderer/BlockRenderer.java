@@ -226,6 +226,8 @@ public class BlockRenderer {
 
 		Minecraft.getMinecraft().displayGuiScreen(new GuiIngameMenu());
 
+		boolean cancel = false;
+		int toRender = 0, rendered = 0;
 		File folder = new File("renders/" + dateFormat.format(new Date()) + "_spritesheets/");
 		Set<String> modids = Stream.of(modidSpec.split(",")).map(String::trim).collect((Collectors.toSet()));
 		SortedMap<String, List<ItemStack>> sheetsToRender = new TreeMap<>();
@@ -252,18 +254,25 @@ public class BlockRenderer {
 				}
 
 				sheetsToRender.get(resloc.getResourceDomain()).addAll(modItems);
+				toRender += modItems.size();
 			}
 		}
+
+		if (toRender == 0)
+			return;
 
 		setUpRenderState(size);
 
 		for (Map.Entry<String, List<ItemStack>> entry : sheetsToRender.entrySet()) {
+			if (cancel) {
+				break;
+			}
+
 			String mod = entry.getKey();
 			List<ItemStack> stacks = entry.getValue();
 
 			long lastUpdate = 0;
 			int dimensions = (int) Math.round(Math.sqrt(stacks.size())),
-				rendered = 0,
 				x = 0,
 				y = 0;
 
@@ -273,8 +282,10 @@ public class BlockRenderer {
 
 			try {
 				for (ItemStack stack : stacks) {
-					if (Keyboard.isKeyDown(Keyboard.KEY_ESCAPE))
+					if (Keyboard.isKeyDown(Keyboard.KEY_ESCAPE)) {
+						cancel = true;
 						break;
+					}
 
 					ByteArrayOutputStream stream = new ByteArrayOutputStream();
 					CompressedStreamTools.writeCompressed(stack.writeToNBT(new NBTTagCompound()), stream);
@@ -284,11 +295,8 @@ public class BlockRenderer {
 					itemMetadata.addProperty("name", stack.getItem().getRegistryName().getResourcePath());
 					itemMetadata.addProperty("metadata", stack.getMetadata());
 					itemMetadata.addProperty("label", stack.getDisplayName());
-					itemMetadata.addProperty("spriteX", x * size);
-					itemMetadata.addProperty("spriteY", y * size);
-					itemMetadata.addProperty("hash", Hashing.sha256()
-							.hashBytes(stream.toByteArray())
-							.toString());
+					itemMetadata.addProperty("x", x * size);
+					itemMetadata.addProperty("y", y * size);
 					sheetMetadata.add(itemMetadata);
 
 					sheetGraphics.drawImage(render(stack), null, x * size, y * size);
@@ -303,34 +311,41 @@ public class BlockRenderer {
 
 					if (Minecraft.getSystemTime() - lastUpdate > 33) {
 						tearDownRenderState();
-						renderLoading(I18n.format("gui.rendering", stacks.size(), mod),
-								I18n.format("gui.progress", rendered, stacks.size(), (stacks.size() - rendered)), stack, (float) rendered / stacks.size());
+						renderLoading(I18n.format("gui.rendering", toRender, mod),
+								I18n.format("gui.progress", rendered, toRender, (toRender - rendered)), stack, (float) rendered / toRender);
 						lastUpdate = Minecraft.getSystemTime();
 						setUpRenderState(size);
 					}
 				}
-				if (rendered >= stacks.size()) {
-					renderLoading(I18n.format("gui.rendered", stacks.size(), Joiner.on(", ").join(modids)), "", null, 1);
+
+				if (!cancel) {
+					File metadataFile = new File(folder, sanitize(mod) + ".json");
+					File imageFile = new File(folder, sanitize(mod) + ".png");
+
+					Files.createParentDirs(metadataFile);
+					Files.createParentDirs(imageFile);
+					metadataFile.createNewFile();
+					imageFile.createNewFile();
+
+					renderLoading(I18n.format("gui.rendering", toRender, mod),
+							I18n.format("msg.render.saving", sanitize(mod)), null, (float) rendered / toRender);
+
+					Files.write(new Gson().toJson(sheetMetadata), metadataFile, Charsets.UTF_8);
+
+					ImageIO.write(sheetImage, "PNG", imageFile);
 				}
-				else {
-					renderLoading(I18n.format("gui.renderCancelled"),
-							I18n.format("gui.progress", rendered, stacks.size(), (stacks.size() - rendered)), null, (float) rendered / stacks.size());
-				}
-
-				File metadataFile = new File(folder, sanitize(mod) + ".json");
-				File imageFile = new File(folder, sanitize(mod) + ".png");
-
-				Files.createParentDirs(metadataFile);
-				Files.createParentDirs(imageFile);
-				metadataFile.createNewFile();
-				imageFile.createNewFile();
-
-				Files.write(new Gson().toJson(sheetMetadata), metadataFile, Charsets.UTF_8);
-				ImageIO.write(sheetImage, "PNG", imageFile);
 			}
 			catch (Exception e) {
 				e.printStackTrace();
 			}
+		}
+
+		if (rendered >= toRender) {
+			renderLoading(I18n.format("gui.rendered", toRender, Joiner.on(", ").join(modids)), "", null, 1);
+		}
+		else {
+			renderLoading(I18n.format("gui.renderCancelled"),
+					I18n.format("gui.progress", rendered, toRender, (toRender - rendered)), null, (float) rendered / toRender);
 		}
 
 		tearDownRenderState();
