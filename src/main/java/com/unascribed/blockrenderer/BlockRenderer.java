@@ -293,8 +293,8 @@ public class BlockRenderer {
 					itemMetadata.addProperty("name", stack.getItem().getRegistryName().getResourcePath());
 					itemMetadata.addProperty("metadata", stack.getMetadata());
 					itemMetadata.addProperty("label", stack.getDisplayName());
-					itemMetadata.addProperty("x", x * size);
-					itemMetadata.addProperty("y", y * size);
+					itemMetadata.addProperty("spriteX", x * size);
+					itemMetadata.addProperty("spriteY", y * size);
 					sheetMetadata.add(itemMetadata);
 
 					Graphics2D sheetGraphics = sheetImage.createGraphics();
