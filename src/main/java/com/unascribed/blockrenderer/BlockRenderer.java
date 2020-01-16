@@ -264,21 +264,19 @@ public class BlockRenderer {
 		setUpRenderState(size);
 
 		for (Map.Entry<String, List<ItemStack>> entry : sheetsToRender.entrySet()) {
-			if (cancel) {
+			if (cancel)
 				break;
-			}
 
 			String mod = entry.getKey();
 			List<ItemStack> stacks = entry.getValue();
 
 			long lastUpdate = 0;
-			int dimensions = (int) Math.round(Math.sqrt(stacks.size())),
+			int dimensions = (int) Math.ceil(Math.sqrt(stacks.size())),
 				x = 0,
 				y = 0;
 
 			JsonArray sheetMetadata = new JsonArray();
 			BufferedImage sheetImage = new BufferedImage(size * dimensions, size * dimensions, BufferedImage.TYPE_INT_ARGB);
-			Graphics2D sheetGraphics = sheetImage.createGraphics();
 
 			try {
 				for (ItemStack stack : stacks) {
@@ -299,7 +297,9 @@ public class BlockRenderer {
 					itemMetadata.addProperty("y", y * size);
 					sheetMetadata.add(itemMetadata);
 
+					Graphics2D sheetGraphics = sheetImage.createGraphics();
 					sheetGraphics.drawImage(render(stack), null, x * size, y * size);
+					sheetGraphics.dispose();
 
 					rendered++;
 					x++;
